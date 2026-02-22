@@ -78,7 +78,7 @@ class ScreenLensDatabase {
                 """)
 
             // Add window metadata columns (safe to run repeatedly — IF NOT EXISTS via catch)
-            for col in ["window_title TEXT", "bundle_id TEXT", "source_url TEXT"] {
+            for col in ["window_title TEXT", "bundle_id TEXT", "source_url TEXT", "annotations TEXT"] {
                 do {
                     try db.execute(sql: "ALTER TABLE screenshots ADD COLUMN \(col)")
                 } catch {
@@ -154,6 +154,19 @@ class ScreenLensDatabase {
         }
     }
 
+    // MARK: - Update annotations
+
+    func updateAnnotations(id: String, annotations: [Annotation]) throws {
+        let json = try JSONEncoder().encode(annotations)
+        let jsonString = String(data: json, encoding: .utf8)
+        try dbQueue.write { db in
+            try db.execute(
+                sql: "UPDATE screenshots SET annotations = ?, updated_at = datetime('now') WHERE id = ?",
+                arguments: [jsonString, id]
+            )
+        }
+    }
+
     // MARK: - FTS5 search (matches Rust search)
 
     func search(text: String, limit: Int = 50, offset: Int = 0) throws -> [Screenshot] {
@@ -167,6 +180,55 @@ class ScreenLensDatabase {
                 """,
                 arguments: [text, limit, offset]
             )
+        }
+    }
+
+    // MARK: - Filtered search (text + mode/date/app filters)
+
+    func searchFiltered(text: String, filters: GalleryFilters, limit: Int = 50, offset: Int = 0) throws -> [Screenshot] {
+        var conditions: [String] = []
+        var args: [DatabaseValueConvertible?] = []
+
+        // FTS5 text match
+        let useFTS = !text.isEmpty
+        var baseQuery: String
+        if useFTS {
+            baseQuery = "SELECT screenshots.* FROM screenshots JOIN screenshots_fts ON screenshots.rowid = screenshots_fts.rowid"
+            conditions.append("screenshots_fts MATCH ?")
+            args.append(text)
+        } else {
+            baseQuery = "SELECT * FROM screenshots"
+        }
+
+        // Mode filter
+        if let mode = filters.mode {
+            conditions.append("mode = ?")
+            args.append(mode.rawValue)
+        }
+
+        // Date filter
+        if let dateRange = filters.dateRange {
+            conditions.append("captured_at >= ?")
+            args.append(dateRange.startDate)
+        }
+
+        // App name filter
+        if let app = filters.appName, !app.isEmpty {
+            conditions.append("application LIKE ?")
+            args.append("%\(app)%")
+        }
+
+        var sql = baseQuery
+        if !conditions.isEmpty {
+            sql += " WHERE " + conditions.joined(separator: " AND ")
+        }
+        sql += useFTS ? " ORDER BY rank" : " ORDER BY captured_at DESC"
+        sql += " LIMIT ? OFFSET ?"
+        args.append(limit)
+        args.append(offset)
+
+        return try dbQueue.read { db in
+            try Screenshot.fetchAll(db, sql: sql, arguments: StatementArguments(args.map { $0 ?? DatabaseValue.null })!)
         }
     }
 }
