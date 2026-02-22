@@ -9,6 +9,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var screenshotStore: ScreenshotStore?
     private var aiClient: AIClient?
     private var config: AppConfig?
+    private var windowPicker: WindowPickerWindow?
 
     private func log(_ msg: String) {
         let line = "[\(ISO8601DateFormatter().string(from: Date()))] \(msg)\n"
@@ -203,8 +204,102 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func captureWindow() {
-        // TODO: Present window picker, then capture selected window
-        NSLog("Window capture not yet implemented")
+        guard let screen = NSScreen.main else { return }
+
+        // Show picker overlay immediately (same pattern as region selector)
+        self.windowPicker = WindowPickerWindow(screen: screen, windows: [])
+        self.windowPicker?.makeKeyAndOrderFront(nil)
+
+        // Fetch window list async, then update the picker
+        Task {
+            do {
+                let content = try await SCShareableContent.excludingDesktopWindows(
+                    true, onScreenWindowsOnly: true
+                )
+
+                // Get z-ordered window IDs from CGWindowList (front-to-back)
+                // Only include normal app windows (layer 0)
+                let zOrderedIDs: [CGWindowID]
+                if let cgList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] {
+                    zOrderedIDs = cgList.compactMap { info -> CGWindowID? in
+                        guard let id = info[kCGWindowNumber as String] as? CGWindowID,
+                              let layer = info[kCGWindowLayer as String] as? Int,
+                              layer == 0 else { return nil }
+                        return id
+                    }
+                } else {
+                    zOrderedIDs = []
+                }
+
+                // Filter to real app windows, exclude our own app
+                let filtered = content.windows.filter {
+                    $0.isOnScreen
+                    && $0.frame.width > 50 && $0.frame.height > 50
+                    && $0.owningApplication?.bundleIdentifier != Bundle.main.bundleIdentifier
+                }
+
+                // Sort by z-order (frontmost first)
+                let idToWindow = Dictionary(uniqueKeysWithValues: filtered.map { ($0.windowID, $0) })
+                var windows: [SCWindow] = []
+                for id in zOrderedIDs {
+                    if let w = idToWindow[id] {
+                        windows.append(w)
+                    }
+                }
+                // Append any that weren't in CGWindowList
+                let matched = Set(windows.map { $0.windowID })
+                windows.append(contentsOf: filtered.filter { !matched.contains($0.windowID) })
+
+                let display = content.displays.first
+
+                await MainActor.run {
+                    if let overlay = self.windowPicker?.contentView as? WindowPickerOverlayView {
+                        overlay.windows = windows
+                        overlay.needsDisplay = true
+                    }
+                }
+
+                self.windowPicker?.onWindowSelected = { [weak self] selectedWindow in
+                    guard let self = self else { return }
+                    self.windowPicker = nil
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                        Task {
+                            do {
+                                guard let display = display else { return }
+                                let filter = SCContentFilter(
+                                    display: display,
+                                    including: [selectedWindow]
+                                )
+                                let config = SCStreamConfiguration()
+                                config.width = Int(selectedWindow.frame.width) * 2
+                                config.height = Int(selectedWindow.frame.height) * 2
+
+                                let image = try await SCScreenshotManager.captureImage(
+                                    contentFilter: filter,
+                                    configuration: config
+                                )
+
+                                let pngData = self.pngDataFrom(cgImage: image)
+                                self.saveAndAnalyze(imageData: pngData, mode: .window)
+                            } catch {
+                                NSLog("Window capture failed: \(error)")
+                            }
+                        }
+                    }
+                }
+
+                self.windowPicker?.onCancelled = { [weak self] in
+                    self?.windowPicker = nil
+                    NSLog("Window selection cancelled")
+                }
+            } catch {
+                NSLog("Window capture failed: \(error)")
+                await MainActor.run {
+                    self.windowPicker?.close()
+                    self.windowPicker = nil
+                }
+            }
+        }
     }
 
     @objc private func openGallery() {
