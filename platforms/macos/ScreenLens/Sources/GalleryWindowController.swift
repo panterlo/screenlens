@@ -5,8 +5,9 @@ class GalleryWindowController: NSWindowController {
 
     private var searchField: NSSearchField!
     private var collectionView: NSCollectionView!
+    var database: ScreenLensDatabase?
 
-    convenience init() {
+    convenience init(database: ScreenLensDatabase?) {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
@@ -18,6 +19,7 @@ class GalleryWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
 
         self.init(window: window)
+        self.database = database
         setupUI()
         loadRecent()
     }
@@ -71,10 +73,15 @@ class GalleryWindowController: NSWindowController {
 
     // MARK: - Data
 
-    private var screenshots: [[String: Any]] = []
+    private var screenshots: [Screenshot] = []
 
     private func loadRecent() {
-        // TODO: Call sl_db_list_recent via FFI, parse JSON into screenshots array
+        do {
+            screenshots = try database?.listRecent() ?? []
+        } catch {
+            NSLog("Failed to load recent screenshots: \(error)")
+            screenshots = []
+        }
         collectionView.reloadData()
     }
 
@@ -83,7 +90,12 @@ class GalleryWindowController: NSWindowController {
         if query.isEmpty {
             loadRecent()
         } else {
-            // TODO: Call sl_db_search via FFI
+            do {
+                screenshots = try database?.search(text: query) ?? []
+            } catch {
+                NSLog("Search failed: \(error)")
+                screenshots = []
+            }
             collectionView.reloadData()
         }
     }
@@ -117,10 +129,7 @@ extension GalleryWindowController: NSCollectionViewDelegate {
     func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
         guard let indexPath = indexPaths.first, indexPath.item < screenshots.count else { return }
         let screenshot = screenshots[indexPath.item]
-        // TODO: Open detail view or full image
-        if let filepath = screenshot["filepath"] as? String {
-            NSWorkspace.shared.open(URL(fileURLWithPath: filepath))
-        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: screenshot.filepath))
     }
 }
 
@@ -167,13 +176,9 @@ class ScreenshotCell: NSCollectionViewItem {
         ])
     }
 
-    func configure(with data: [String: Any]) {
-        if let filepath = data["filepath"] as? String {
-            thumbnailView.image = NSImage(contentsOfFile: filepath)
-        }
-        summaryLabel.stringValue = (data["summary"] as? String) ?? "No analysis yet"
-        if let tags = data["tags"] as? [String] {
-            tagsLabel.stringValue = tags.joined(separator: " · ")
-        }
+    func configure(with screenshot: Screenshot) {
+        thumbnailView.image = NSImage(contentsOfFile: screenshot.filepath)
+        summaryLabel.stringValue = screenshot.summary ?? "No analysis yet"
+        tagsLabel.stringValue = screenshot.tagList.joined(separator: " · ")
     }
 }

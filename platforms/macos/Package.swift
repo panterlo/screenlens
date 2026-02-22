@@ -4,18 +4,20 @@ import PackageDescription
 let package = Package(
     name: "ScreenLens",
     platforms: [
-        .macOS(.v13)
+        .macOS(.v14)
+    ],
+    dependencies: [
+        .package(url: "https://github.com/LebJe/TOMLKit.git", from: "0.6.0"),
+        .package(url: "https://github.com/groue/GRDB.swift.git", from: "7.0.0"),
     ],
     targets: [
         .executableTarget(
             name: "ScreenLens",
-            dependencies: [],
-            path: "ScreenLens/Sources",
-            linkerSettings: [
-                // Link against the Rust FFI library
-                .unsafeFlags(["-L../../target/release"]),
-                .linkedLibrary("screenlens_ffi"),
-            ]
+            dependencies: [
+                "TOMLKit",
+                .product(name: "GRDB", package: "GRDB.swift"),
+            ],
+            path: "ScreenLens/Sources"
         ),
     ]
 )
