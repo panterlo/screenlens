@@ -1,0 +1,47 @@
+[capture]
+# Default save directory (relative to user data dir if not absolute)
+save_dir = "screenshots"
+# Image format: "png" or "jpg"
+format = "png"
+# JPEG quality (1-100), only used when format = "jpg"
+jpeg_quality = 90
+
+[ai]
+# OpenAI-compatible API endpoint (e.g. Qwen3-VL, LLaVA, etc.)
+api_url = "https://your-server.example.com/v1"
+api_key = "your-api-key"
+# Model identifier
+model = "qwen3-vl"
+# Whether to auto-analyze screenshots on capture
+auto_analyze = true
+
+[database]
+# SQLite database path (relative to user data dir if not absolute)
+path = "screenlens.db"
+
+[sharing]
+# Server URL for the sharing API
+server_url = "https://your-server.example.com"
+# API key for authenticating with the sharing server
+api_key = ""
+# Auto-upload screenshots to server
+auto_upload = false
+
+[hotkeys]
+# Global hotkey bindings
+capture_fullscreen = "Ctrl+Shift+F"
+capture_window = "Ctrl+Shift+W"
+capture_region = "Ctrl+Shift+R"
+open_gallery = "Ctrl+Shift+G"
+
+[server]
+# Sharing server settings (for running the server)
+host = "0.0.0.0"
+port = 8390
+# Secret key for JWT token signing
+jwt_secret = "change-me-in-production"
+# Max upload size in MB
+max_upload_mb = 50
+# Storage backend: "local" or "s3"
+storage = "local"
+storage_path = "./data/images"

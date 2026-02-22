@@ -1,0 +1,27 @@
+[package]
+name = "screenlens-server"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+screenlens-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+toml = { workspace = true }
+
+# Web framework
+axum = { version = "0.8", features = ["multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace", "limit"] }
+
+# Auth
+jsonwebtoken = "9"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
