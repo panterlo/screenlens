@@ -32,6 +32,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         log("started successfully")
     }
 
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        return false
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         database = nil
         screenshotStore = nil
