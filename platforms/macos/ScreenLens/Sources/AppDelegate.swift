@@ -146,6 +146,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // Snapshot the frontmost app before our overlay takes focus
+        let frontApp = NSWorkspace.shared.frontmostApplication
+
         let selector = RegionSelectorWindow(screen: screen)
         selector.makeKeyAndOrderFront(nil)
 
@@ -189,7 +192,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                         }
 
                         let pngData = self.pngDataFrom(cgImage: croppedImage)
-                        self.saveAndAnalyze(imageData: pngData, mode: .region)
+                        var regionInfo: WindowInfo?
+                        if let bid = frontApp?.bundleIdentifier {
+                            let url = self.browserURL(for: bid)
+                            if url != nil {
+                                regionInfo = WindowInfo(
+                                    appName: frontApp?.localizedName,
+                                    bundleId: bid,
+                                    sourceUrl: url
+                                )
+                            }
+                        }
+                        self.saveAndAnalyze(imageData: pngData, mode: .region, windowInfo: regionInfo)
 
                     } catch {
                         NSLog("Region capture failed: \(error)")
@@ -280,7 +294,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                 )
 
                                 let pngData = self.pngDataFrom(cgImage: image)
-                                self.saveAndAnalyze(imageData: pngData, mode: .window)
+                                let bid = selectedWindow.owningApplication?.bundleIdentifier
+                                let url = bid.flatMap { self.browserURL(for: $0) }
+                                let info = WindowInfo(
+                                    appName: selectedWindow.owningApplication?.applicationName,
+                                    bundleId: bid,
+                                    windowTitle: selectedWindow.title,
+                                    sourceUrl: url
+                                )
+                                self.saveAndAnalyze(imageData: pngData, mode: .window, windowInfo: info)
                             } catch {
                                 NSLog("Window capture failed: \(error)")
                             }
@@ -316,12 +338,94 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Helpers
 
+    /// Known browser bundle IDs.
+    private static let browserBundleIds: Set<String> = [
+        "com.google.Chrome", "com.google.Chrome.canary",
+        "com.brave.Browser", "company.thebrowser.Browser",
+        "com.microsoft.edgemac", "com.vivaldi.Vivaldi",
+        "com.operasoftware.Opera", "com.apple.Safari",
+        "org.mozilla.firefox",
+    ]
+
+    /// Try to get the active tab URL from a browser via the Accessibility API.
+    /// Reads the address bar value — requires Accessibility permission (no extra consent).
+    private func browserURL(for bundleId: String) -> String? {
+        guard Self.browserBundleIds.contains(bundleId) else { return nil }
+
+        guard let app = NSRunningApplication.runningApplications(
+            withBundleIdentifier: bundleId
+        ).first else { return nil }
+
+        let axApp = AXUIElementCreateApplication(app.processIdentifier)
+
+        var windowRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(axApp, kAXFocusedWindowAttribute as CFString, &windowRef) == .success,
+              let axWindow = windowRef else { return nil }
+
+        return findURLInElement(axWindow as! AXUIElement, depth: 0)
+    }
+
+    /// Recursively search for URL-like text in AX elements (address bar).
+    private func findURLInElement(_ element: AXUIElement, depth: Int) -> String? {
+        if depth > 15 { return nil }
+
+        var roleRef: CFTypeRef?
+        AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
+        let role = roleRef as? String
+
+        if role == kAXTextFieldRole || role == kAXComboBoxRole || role == "AXTextField" || role == "AXComboBox" {
+            var valueRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
+               let value = valueRef as? String, !value.isEmpty,
+               looksLikeURL(value)
+            {
+                if value.hasPrefix("http://") || value.hasPrefix("https://") {
+                    return value
+                } else {
+                    return "https://\(value)"
+                }
+            }
+        }
+
+        // Recurse into children
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else { return nil }
+
+        for child in children {
+            if let url = findURLInElement(child, depth: depth + 1) {
+                return url
+            }
+        }
+        return nil
+    }
+
+    /// Check if a string looks like a URL or domain (e.g. "aftonbladet.se", "https://example.com/path").
+    private func looksLikeURL(_ value: String) -> Bool {
+        if value.hasPrefix("http://") || value.hasPrefix("https://") { return true }
+        // Chrome shows just the domain (e.g. "aftonbladet.se" or "docs.google.com/...")
+        let parts = value.split(separator: ".", maxSplits: 3)
+        if parts.count >= 2 {
+            let tld = parts.last?.split(separator: "/").first ?? ""
+            if tld.count >= 2 && tld.count <= 10 && tld.allSatisfy(\.isLetter) {
+                return true
+            }
+        }
+        return false
+    }
+
     private func pngDataFrom(cgImage: CGImage) -> Data {
         let rep = NSBitmapImageRep(cgImage: cgImage)
+        let scale = NSScreen.main?.backingScaleFactor ?? 2.0
+        // Set size in points so PNG metadata reflects true DPI (e.g. 144 for Retina)
+        rep.size = NSSize(
+            width: CGFloat(cgImage.width) / scale,
+            height: CGFloat(cgImage.height) / scale
+        )
         return rep.representation(using: .png, properties: [:]) ?? Data()
     }
 
-    private func saveAndAnalyze(imageData: Data, mode: CaptureMode) {
+    private func saveAndAnalyze(imageData: Data, mode: CaptureMode, windowInfo: WindowInfo? = nil) {
         guard let store = screenshotStore else {
             NSLog("Core not initialized — captured \(imageData.count) bytes (\(mode.rawValue)) but cannot save")
             copyToClipboard(imageData: imageData)
@@ -329,7 +433,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         do {
-            let result = try store.save(imageData: imageData, mode: mode)
+            let result = try store.save(imageData: imageData, mode: mode, windowInfo: windowInfo)
+            NSSound(named: "Tink")?.play()
+            flashStatusBarIcon()
             NSLog("Screenshot saved: \(result.filename) (\(result.sizeBytes) bytes)")
 
             // Fire async AI analysis if client is configured
@@ -352,6 +458,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Also copy to clipboard as a convenience
         copyToClipboard(imageData: imageData)
+    }
+
+    private func flashStatusBarIcon() {
+        guard let button = statusItem.button else { return }
+        let original = button.image
+        button.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "Captured")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+            button.image = original
+        }
     }
 
     private func copyToClipboard(imageData: Data) {

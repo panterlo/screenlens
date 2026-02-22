@@ -31,6 +31,10 @@ struct Screenshot: Codable, FetchableRecord, PersistableRecord {
     var shareId: String?
     var shared: Int
     var uploaded: Int
+    // Window metadata
+    var windowTitle: String?
+    var bundleId: String?
+    var sourceUrl: String?
     // Metadata
     var createdAt: String?
     var updatedAt: String?
@@ -47,6 +51,9 @@ struct Screenshot: Codable, FetchableRecord, PersistableRecord {
         case analyzedAt = "analyzed_at"
         case shareId = "share_id"
         case shared, uploaded
+        case windowTitle = "window_title"
+        case bundleId = "bundle_id"
+        case sourceUrl = "source_url"
         case createdAt = "created_at"
         case updatedAt = "updated_at"
     }
@@ -74,6 +81,14 @@ struct AnalysisResult: Codable {
         case extractedText = "extracted_text"
         case application, confidence
     }
+}
+
+/// Metadata captured from the source window (window capture mode only).
+struct WindowInfo {
+    var appName: String?
+    var bundleId: String?
+    var windowTitle: String?
+    var sourceUrl: String?
 }
 
 /// Result returned from saving a screenshot to disk + DB.

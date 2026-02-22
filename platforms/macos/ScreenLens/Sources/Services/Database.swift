@@ -76,6 +76,15 @@ class ScreenLensDatabase {
                 CREATE INDEX IF NOT EXISTS idx_screenshots_share_id ON screenshots(share_id);
                 CREATE INDEX IF NOT EXISTS idx_screenshots_tags ON screenshots(tags);
                 """)
+
+            // Add window metadata columns (safe to run repeatedly — IF NOT EXISTS via catch)
+            for col in ["window_title TEXT", "bundle_id TEXT", "source_url TEXT"] {
+                do {
+                    try db.execute(sql: "ALTER TABLE screenshots ADD COLUMN \(col)")
+                } catch {
+                    // Column already exists — ignore
+                }
+            }
         }
     }
 
@@ -89,15 +98,19 @@ class ScreenLensDatabase {
         mode: CaptureMode,
         sizeBytes: Int64,
         width: Int? = nil,
-        height: Int? = nil
+        height: Int? = nil,
+        application: String? = nil,
+        windowTitle: String? = nil,
+        bundleId: String? = nil,
+        sourceUrl: String? = nil
     ) throws {
         try dbQueue.write { db in
             try db.execute(
                 sql: """
-                    INSERT INTO screenshots (id, filepath, filename, captured_at, mode, size_bytes, width, height)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO screenshots (id, filepath, filename, captured_at, mode, size_bytes, width, height, application, window_title, bundle_id, source_url)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                arguments: [id, filepath, filename, capturedAt, mode.rawValue, sizeBytes, width, height]
+                arguments: [id, filepath, filename, capturedAt, mode.rawValue, sizeBytes, width, height, application, windowTitle, bundleId, sourceUrl]
             )
         }
     }

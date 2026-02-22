@@ -13,7 +13,7 @@ class ScreenshotStore {
 
     /// Save PNG image data to disk and insert a DB row.
     /// Filename format: `YYYYMMDD_HHmmss_<uuid8>.png` (matching Rust pattern).
-    func save(imageData: Data, mode: CaptureMode) throws -> SaveResult {
+    func save(imageData: Data, mode: CaptureMode, windowInfo: WindowInfo? = nil) throws -> SaveResult {
         // Ensure save directory exists
         try FileManager.default.createDirectory(
             atPath: saveDir, withIntermediateDirectories: true)
@@ -47,7 +47,11 @@ class ScreenshotStore {
             filename: filename,
             capturedAt: capturedAt,
             mode: mode,
-            sizeBytes: Int64(imageData.count)
+            sizeBytes: Int64(imageData.count),
+            application: windowInfo?.appName,
+            windowTitle: windowInfo?.windowTitle,
+            bundleId: windowInfo?.bundleId,
+            sourceUrl: windowInfo?.sourceUrl
         )
 
         return SaveResult(
