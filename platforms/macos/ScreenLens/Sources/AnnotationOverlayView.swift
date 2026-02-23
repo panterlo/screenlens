@@ -6,6 +6,7 @@ class AnnotationOverlayView: NSView {
 
     var annotations: [Annotation] = []
     var selectedAnnotationId: String?
+    var hiddenAnnotationId: String?
     var creationPreview: Annotation?
     var imageRect: NSRect = .zero       // aspect-fit rect of the image in view coords
     var imageSize: NSSize = .zero       // original image pixel dimensions
@@ -57,6 +58,7 @@ class AnnotationOverlayView: NSView {
         transform.concat()
 
         for annotation in annotations {
+            if annotation.id == hiddenAnnotationId { continue }
             AnnotationRenderer.draw(annotation, scale: s)
             if annotation.id == selectedAnnotationId {
                 drawSelectionHandles(for: annotation, scale: s)
@@ -70,14 +72,14 @@ class AnnotationOverlayView: NSView {
         NSGraphicsContext.current?.restoreGraphicsState()
     }
 
-    private func drawSelectionHandles(for annotation: Annotation, scale s: CGFloat) {
-        let handleSize: CGFloat = 8
-        var points: [NSPoint] = []
-
+    /// Returns handle center positions in scaled coordinates (relative to image origin, already multiplied by scale).
+    /// For rectangles/text: 4 corners [minX-minY, maxX-minY, maxX-maxY, minX-maxY].
+    /// For arrows: 2 endpoints [start, end].
+    func handlePositions(for annotation: Annotation, scale s: CGFloat) -> [NSPoint] {
         switch annotation.type {
         case .arrow:
             if let line = annotation.geometry.line {
-                points = [
+                return [
                     NSPoint(x: line.start.x * s, y: line.start.y * s),
                     NSPoint(x: line.end.x * s, y: line.end.y * s),
                 ]
@@ -86,7 +88,7 @@ class AnnotationOverlayView: NSView {
             if let r = annotation.geometry.rect {
                 let vr = NSRect(x: r.origin.x * s, y: r.origin.y * s,
                                 width: r.width * s, height: r.height * s)
-                points = [
+                return [
                     NSPoint(x: vr.minX, y: vr.minY),
                     NSPoint(x: vr.maxX, y: vr.minY),
                     NSPoint(x: vr.maxX, y: vr.maxY),
@@ -94,6 +96,12 @@ class AnnotationOverlayView: NSView {
                 ]
             }
         }
+        return []
+    }
+
+    private func drawSelectionHandles(for annotation: Annotation, scale s: CGFloat) {
+        let handleSize: CGFloat = 8
+        let points = handlePositions(for: annotation, scale: s)
 
         for p in points {
             let handleRect = NSRect(x: p.x - handleSize / 2, y: p.y - handleSize / 2,

@@ -49,6 +49,15 @@ class AnnotationEditorWindowController: NSWindowController {
         }
         toolbar.onColorChanged = { [weak self] color in
             self?.canvas.currentColor = color
+            self?.canvas.updateSelectedColor(color)
+        }
+        toolbar.onLineWidthChanged = { [weak self] width in
+            self?.canvas.currentLineWidth = width
+            self?.canvas.updateSelectedLineWidth(width)
+        }
+        toolbar.onFontSizeChanged = { [weak self] size in
+            self?.canvas.currentFontSize = size
+            self?.canvas.updateSelectedFontSize(size)
         }
         toolbar.onAction = { [weak self] action in
             self?.handleAction(action)
@@ -60,6 +69,11 @@ class AnnotationEditorWindowController: NSWindowController {
         canvas.setImage(image)
         canvas.onAnnotationsChanged = { [weak self] annotations in
             self?.saveAnnotations(annotations)
+        }
+        canvas.onSelectionChanged = { [weak self] annotation in
+            if let fontSize = annotation?.style.fontSize {
+                self?.toolbar.setDisplayedFontSize(fontSize)
+            }
         }
         contentView.addSubview(canvas)
 

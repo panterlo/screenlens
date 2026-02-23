@@ -8,10 +8,15 @@ class AnnotationToolbar: NSView {
 
     var onToolChanged: ((AnnotationTool) -> Void)?
     var onColorChanged: ((NSColor) -> Void)?
+    var onLineWidthChanged: ((CGFloat) -> Void)?
+    var onFontSizeChanged: ((CGFloat) -> Void)?
     var onAction: ((AnnotationAction) -> Void)?
 
     private var toolButtons: [NSButton] = []
     private var selectedTool: AnnotationTool = .select
+    private var widthLabel: NSTextField!
+    private var fontSizeLabel: NSTextField!
+    private var fontSizeStepper: NSStepper!
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -51,6 +56,32 @@ class AnnotationToolbar: NSView {
             colorWell.heightAnchor.constraint(equalToConstant: 28),
         ])
 
+        let widthSlider = NSSlider(value: 3, minValue: 1, maxValue: 10, target: self, action: #selector(widthSliderChanged(_:)))
+        widthSlider.isContinuous = true
+        widthSlider.numberOfTickMarks = 10
+        widthSlider.allowsTickMarkValuesOnly = true
+        widthSlider.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            widthSlider.widthAnchor.constraint(equalToConstant: 80),
+        ])
+
+        widthLabel = NSTextField(labelWithString: "3")
+        widthLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        widthLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        fontSizeStepper = NSStepper()
+        fontSizeStepper.minValue = 8
+        fontSizeStepper.maxValue = 72
+        fontSizeStepper.increment = 2
+        fontSizeStepper.integerValue = 16
+        fontSizeStepper.target = self
+        fontSizeStepper.action = #selector(fontSizeStepperChanged(_:))
+        fontSizeStepper.translatesAutoresizingMaskIntoConstraints = false
+
+        fontSizeLabel = NSTextField(labelWithString: "16pt")
+        fontSizeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        fontSizeLabel.translatesAutoresizingMaskIntoConstraints = false
+
         let separator1 = makeSeparator()
 
         let undoBtn = makeButton(symbol: "arrow.uturn.backward", tooltip: "Undo")
@@ -76,7 +107,7 @@ class AnnotationToolbar: NSView {
         exportBtn.translatesAutoresizingMaskIntoConstraints = false
 
         var views: [NSView] = toolButtons
-        views.append(contentsOf: [colorWell, separator1, undoBtn, redoBtn, deleteBtn, separator2, copyBtn, exportBtn])
+        views.append(contentsOf: [colorWell, widthSlider, widthLabel, fontSizeStepper, fontSizeLabel, separator1, undoBtn, redoBtn, deleteBtn, separator2, copyBtn, exportBtn])
 
         let stack = NSStackView(views: views)
         stack.orientation = .horizontal
@@ -128,6 +159,23 @@ class AnnotationToolbar: NSView {
 
     @objc private func colorChanged(_ sender: NSColorWell) {
         onColorChanged?(sender.color)
+    }
+
+    @objc private func widthSliderChanged(_ sender: NSSlider) {
+        let value = CGFloat(sender.integerValue)
+        widthLabel.stringValue = "\(sender.integerValue)"
+        onLineWidthChanged?(value)
+    }
+
+    @objc private func fontSizeStepperChanged(_ sender: NSStepper) {
+        let value = CGFloat(sender.integerValue)
+        fontSizeLabel.stringValue = "\(sender.integerValue)pt"
+        onFontSizeChanged?(value)
+    }
+
+    func setDisplayedFontSize(_ size: CGFloat) {
+        fontSizeStepper.integerValue = Int(size)
+        fontSizeLabel.stringValue = "\(Int(size))pt"
     }
 
     @objc private func undoClicked() { onAction?(.undo) }

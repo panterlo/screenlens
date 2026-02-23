@@ -65,7 +65,7 @@ class GalleryWindowController: NSWindowController {
 
         // Center: collection view
         let layout = NSCollectionViewFlowLayout()
-        layout.itemSize = NSSize(width: 240, height: 240)
+        layout.itemSize = NSSize(width: 240, height: 210)
         layout.minimumInteritemSpacing = 12
         layout.minimumLineSpacing = 12
         layout.sectionInset = NSEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
@@ -360,6 +360,7 @@ class ScreenshotCell: NSCollectionViewItem {
             tagsLabel.topAnchor.constraint(equalTo: metaLabel.bottomAnchor, constant: 2),
             tagsLabel.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
             tagsLabel.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
+            tagsLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -6),
         ])
     }
 

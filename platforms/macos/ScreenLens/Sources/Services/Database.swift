@@ -59,25 +59,28 @@ class ScreenLensDatabase {
                     tags,
                     extracted_text,
                     application,
+                    filename,
+                    window_title,
+                    source_url,
                     content='screenshots',
                     content_rowid='rowid'
                 );
 
                 CREATE TRIGGER IF NOT EXISTS screenshots_ai AFTER INSERT ON screenshots BEGIN
-                    INSERT INTO screenshots_fts(rowid, summary, tags, extracted_text, application)
-                    VALUES (new.rowid, new.summary, new.tags, new.extracted_text, new.application);
+                    INSERT INTO screenshots_fts(rowid, summary, tags, extracted_text, application, filename, window_title, source_url)
+                    VALUES (new.rowid, new.summary, new.tags, new.extracted_text, new.application, new.filename, new.window_title, new.source_url);
                 END;
 
                 CREATE TRIGGER IF NOT EXISTS screenshots_au AFTER UPDATE ON screenshots BEGIN
-                    INSERT INTO screenshots_fts(screenshots_fts, rowid, summary, tags, extracted_text, application)
-                    VALUES ('delete', old.rowid, old.summary, old.tags, old.extracted_text, old.application);
-                    INSERT INTO screenshots_fts(rowid, summary, tags, extracted_text, application)
-                    VALUES (new.rowid, new.summary, new.tags, new.extracted_text, new.application);
+                    INSERT INTO screenshots_fts(screenshots_fts, rowid, summary, tags, extracted_text, application, filename, window_title, source_url)
+                    VALUES ('delete', old.rowid, old.summary, old.tags, old.extracted_text, old.application, old.filename, old.window_title, old.source_url);
+                    INSERT INTO screenshots_fts(rowid, summary, tags, extracted_text, application, filename, window_title, source_url)
+                    VALUES (new.rowid, new.summary, new.tags, new.extracted_text, new.application, new.filename, new.window_title, new.source_url);
                 END;
 
                 CREATE TRIGGER IF NOT EXISTS screenshots_ad AFTER DELETE ON screenshots BEGIN
-                    INSERT INTO screenshots_fts(screenshots_fts, rowid, summary, tags, extracted_text, application)
-                    VALUES ('delete', old.rowid, old.summary, old.tags, old.extracted_text, old.application);
+                    INSERT INTO screenshots_fts(screenshots_fts, rowid, summary, tags, extracted_text, application, filename, window_title, source_url)
+                    VALUES ('delete', old.rowid, old.summary, old.tags, old.extracted_text, old.application, old.filename, old.window_title, old.source_url);
                 END;
 
                 CREATE INDEX IF NOT EXISTS idx_screenshots_captured_at ON screenshots(captured_at);
@@ -92,6 +95,45 @@ class ScreenLensDatabase {
                 } catch {
                     // Column already exists — ignore
                 }
+            }
+
+            // Migrate FTS index to include filename, window_title, source_url.
+            // Check if the existing FTS table has the old schema (4 columns) and rebuild if needed.
+            let ftsColumns = try Row.fetchAll(db, sql: "PRAGMA table_info(screenshots_fts)")
+            let hasFilename = ftsColumns.contains { ($0["name"] as String?) == "filename" }
+            if !hasFilename {
+                try db.execute(sql: """
+                    DROP TRIGGER IF EXISTS screenshots_ai;
+                    DROP TRIGGER IF EXISTS screenshots_au;
+                    DROP TRIGGER IF EXISTS screenshots_ad;
+                    DROP TABLE IF EXISTS screenshots_fts;
+
+                    CREATE VIRTUAL TABLE screenshots_fts USING fts5(
+                        summary, tags, extracted_text, application,
+                        filename, window_title, source_url,
+                        content='screenshots', content_rowid='rowid'
+                    );
+
+                    CREATE TRIGGER screenshots_ai AFTER INSERT ON screenshots BEGIN
+                        INSERT INTO screenshots_fts(rowid, summary, tags, extracted_text, application, filename, window_title, source_url)
+                        VALUES (new.rowid, new.summary, new.tags, new.extracted_text, new.application, new.filename, new.window_title, new.source_url);
+                    END;
+
+                    CREATE TRIGGER screenshots_au AFTER UPDATE ON screenshots BEGIN
+                        INSERT INTO screenshots_fts(screenshots_fts, rowid, summary, tags, extracted_text, application, filename, window_title, source_url)
+                        VALUES ('delete', old.rowid, old.summary, old.tags, old.extracted_text, old.application, old.filename, old.window_title, old.source_url);
+                        INSERT INTO screenshots_fts(rowid, summary, tags, extracted_text, application, filename, window_title, source_url)
+                        VALUES (new.rowid, new.summary, new.tags, new.extracted_text, new.application, new.filename, new.window_title, new.source_url);
+                    END;
+
+                    CREATE TRIGGER screenshots_ad AFTER DELETE ON screenshots BEGIN
+                        INSERT INTO screenshots_fts(screenshots_fts, rowid, summary, tags, extracted_text, application, filename, window_title, source_url)
+                        VALUES ('delete', old.rowid, old.summary, old.tags, old.extracted_text, old.application, old.filename, old.window_title, old.source_url);
+                    END;
+
+                    INSERT INTO screenshots_fts(rowid, summary, tags, extracted_text, application, filename, window_title, source_url)
+                    SELECT rowid, summary, tags, extracted_text, application, filename, window_title, source_url FROM screenshots;
+                """)
             }
         }
     }

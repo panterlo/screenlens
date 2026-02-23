@@ -3,7 +3,6 @@ import AppKit
 class FilterBarView: NSView {
     private let modePopup = NSPopUpButton()
     private let datePopup = NSPopUpButton()
-    private let appField = NSTextField()
 
     var onFiltersChanged: ((GalleryFilters) -> Void)?
 
@@ -29,13 +28,7 @@ class FilterBarView: NSView {
         datePopup.action = #selector(filterChanged)
         datePopup.translatesAutoresizingMaskIntoConstraints = false
 
-        // App name filter
-        appField.placeholderString = "App name..."
-        appField.target = self
-        appField.action = #selector(filterChanged)
-        appField.translatesAutoresizingMaskIntoConstraints = false
-
-        let stack = NSStackView(views: [modePopup, datePopup, appField])
+        let stack = NSStackView(views: [modePopup, datePopup])
         stack.orientation = .horizontal
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -44,9 +37,8 @@ class FilterBarView: NSView {
         NSLayoutConstraint.activate([
             stack.topAnchor.constraint(equalTo: topAnchor),
             stack.leadingAnchor.constraint(equalTo: leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+            stack.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor),
             stack.bottomAnchor.constraint(equalTo: bottomAnchor),
-            appField.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
             heightAnchor.constraint(equalToConstant: 28),
         ])
     }
@@ -72,8 +64,6 @@ class FilterBarView: NSView {
         default: dateRange = nil
         }
 
-        let app = appField.stringValue.isEmpty ? nil : appField.stringValue
-
-        return GalleryFilters(mode: mode, dateRange: dateRange, appName: app)
+        return GalleryFilters(mode: mode, dateRange: dateRange, appName: nil)
     }
 }

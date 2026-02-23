@@ -4,17 +4,36 @@ enum AnnotationTool: String {
     case select, arrow, rectangle, highlight, text
 }
 
+private enum DragMode {
+    case none, move, resize
+}
+
 /// Canvas view that hosts the image and annotation overlay. Handles all mouse interaction.
-class AnnotationCanvasView: NSView {
+class AnnotationCanvasView: NSView, NSTextFieldDelegate {
 
     let imageView = NSImageView()
     let overlayView = AnnotationOverlayView()
 
     var annotations: [Annotation] = [] { didSet { overlayView.annotations = annotations; overlayView.needsDisplay = true } }
-    var selectedAnnotationId: String? { didSet { overlayView.selectedAnnotationId = selectedAnnotationId; overlayView.needsDisplay = true } }
+    var selectedAnnotationId: String? {
+        didSet {
+            overlayView.selectedAnnotationId = selectedAnnotationId
+            overlayView.needsDisplay = true
+            let selected = annotations.first(where: { $0.id == selectedAnnotationId })
+            onSelectionChanged?(selected)
+        }
+    }
     var currentTool: AnnotationTool = .select
     var currentColor: NSColor = .systemRed
+    var currentLineWidth: CGFloat = 3
+    var currentFontSize: CGFloat = 16
     var onAnnotationsChanged: (([Annotation]) -> Void)?
+    var onSelectionChanged: ((Annotation?) -> Void)?
+
+    // Inline text editing state
+    private var inlineTextField: NSTextField?
+    private var editingAnnotationIndex: Int?   // nil = creating new, set = editing existing
+    private var pendingTextGeometry: AnnotationGeometry?  // stores geometry during new text creation
 
     private var undoStack: [[Annotation]] = []
     private var redoStack: [[Annotation]] = []
@@ -22,6 +41,11 @@ class AnnotationCanvasView: NSView {
     private var isDragging = false
     private var dragOriginalPosition: NSPoint = .zero  // for move operations
     private var movingAnnotationIndex: Int?
+
+    // Resize state
+    private var dragMode: DragMode = .none
+    private var resizingHandleIndex: Int = -1
+    private var resizeAnchor: NSPoint = .zero  // fixed opposite corner/endpoint
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -50,9 +74,31 @@ class AnnotationCanvasView: NSView {
             overlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
             overlayView.bottomAnchor.constraint(equalTo: bottomAnchor),
         ])
+
+        // Tracking area for cursor feedback
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(trackingArea)
     }
 
     override var acceptsFirstResponder: Bool { true }
+
+    override func hitTest(_ aPoint: NSPoint) -> NSView? {
+        // Let clicks reach the inline text field when it's active
+        if let tf = inlineTextField {
+            let tfPoint = tf.convert(aPoint, from: superview)
+            if tf.bounds.contains(tfPoint) {
+                return tf.hitTest(aPoint)
+            }
+        }
+        // Ensure all mouse events go to this canvas, not to imageView or overlayView
+        let local = convert(aPoint, from: superview)
+        return bounds.contains(local) ? self : nil
+    }
 
     func setImage(_ image: NSImage) {
         imageView.image = image
@@ -63,6 +109,7 @@ class AnnotationCanvasView: NSView {
     override func layout() {
         super.layout()
         updateImageRect()
+        repositionInlineTextField()
     }
 
     private func updateImageRect() {
@@ -160,21 +207,115 @@ class AnnotationCanvasView: NSView {
         return hypot(p.x - projX, p.y - projY)
     }
 
+    // MARK: - Handle hit-testing
+
+    /// Returns the handle index if viewPoint is within tolerance of a selection handle, nil otherwise.
+    /// Uses image coordinates with a tolerance larger than hitTestAnnotation (10px) so handles win.
+    private func hitTestHandle(at viewPoint: NSPoint) -> Int? {
+        guard let selId = selectedAnnotationId,
+              let annotation = annotations.first(where: { $0.id == selId }) else { return nil }
+
+        let imgPoint = viewToImage(viewPoint)
+        let tolerance: CGFloat = 14  // > annotation body tolerance (10) so handles take priority
+
+        switch annotation.type {
+        case .arrow:
+            if let line = annotation.geometry.line {
+                let points = [line.start, line.end]
+                for (i, p) in points.enumerated() {
+                    if hypot(imgPoint.x - p.x, imgPoint.y - p.y) <= tolerance {
+                        return i
+                    }
+                }
+            }
+        case .rectangle, .text:
+            if let r = annotation.geometry.rect {
+                let corners = [
+                    NSPoint(x: r.minX, y: r.minY),
+                    NSPoint(x: r.maxX, y: r.minY),
+                    NSPoint(x: r.maxX, y: r.maxY),
+                    NSPoint(x: r.minX, y: r.maxY),
+                ]
+                for (i, c) in corners.enumerated() {
+                    if hypot(imgPoint.x - c.x, imgPoint.y - c.y) <= tolerance {
+                        return i
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Returns the anchor point (in image coordinates) for resizing — the opposite corner/endpoint.
+    private func anchorForHandle(index: Int, annotation: Annotation) -> NSPoint {
+        switch annotation.type {
+        case .arrow:
+            if let line = annotation.geometry.line {
+                // index 0 = start → anchor is end; index 1 = end → anchor is start
+                return index == 0 ? line.end : line.start
+            }
+        case .rectangle, .text:
+            if let r = annotation.geometry.rect {
+                let corners = [
+                    NSPoint(x: r.minX, y: r.minY),  // 0
+                    NSPoint(x: r.maxX, y: r.minY),  // 1
+                    NSPoint(x: r.maxX, y: r.maxY),  // 2
+                    NSPoint(x: r.minX, y: r.maxY),  // 3
+                ]
+                // Opposite corner: 0↔2, 1↔3
+                let oppositeIndex = (index + 2) % 4
+                return corners[oppositeIndex]
+            }
+        }
+        return .zero
+    }
+
     // MARK: - Mouse events
 
     override func mouseDown(with event: NSEvent) {
+        // Commit any active inline edit when clicking outside the text field
+        if inlineTextField != nil {
+            commitInlineEdit()
+            return
+        }
+
+        if event.clickCount == 2 && currentTool == .select {
+            let viewPoint = convert(event.locationInWindow, from: nil)
+            if let idx = hitTestAnnotation(at: viewPoint),
+               annotations[idx].type == .text {
+                editTextAnnotation(at: idx)
+                return
+            }
+        }
+
         let viewPoint = convert(event.locationInWindow, from: nil)
         let imgPoint = viewToImage(viewPoint)
         dragStart = imgPoint
         isDragging = true
         movingAnnotationIndex = nil
+        dragMode = .none
 
         if currentTool == .select {
+            // 1. Check if clicking a resize handle on the selected annotation
+            if let handleIdx = hitTestHandle(at: viewPoint),
+               let selId = selectedAnnotationId,
+               let annotation = annotations.first(where: { $0.id == selId }) {
+                dragMode = .resize
+                resizingHandleIndex = handleIdx
+                resizeAnchor = anchorForHandle(index: handleIdx, annotation: annotation)
+                NSCursor.closedHand.set()
+                return
+            }
+
+            // 2. Check if clicking an annotation body → move mode
             if let idx = hitTestAnnotation(at: viewPoint) {
                 selectedAnnotationId = annotations[idx].id
                 movingAnnotationIndex = idx
                 dragOriginalPosition = imgPoint
+                dragMode = .move
+                NSCursor.closedHand.set()
             } else {
+                // 3. Click on empty space → deselect
                 selectedAnnotationId = nil
             }
         }
@@ -186,8 +327,16 @@ class AnnotationCanvasView: NSView {
         let imgPoint = viewToImage(viewPoint)
 
         if currentTool == .select {
-            // Move selected annotation
-            if let idx = movingAnnotationIndex {
+            if dragMode == .resize {
+                // Resize selected annotation
+                if let selId = selectedAnnotationId,
+                   let idx = annotations.firstIndex(where: { $0.id == selId }) {
+                    if undoStack.last != annotations { pushUndo() }
+                    resizeAnnotation(at: idx, handleIndex: resizingHandleIndex, to: imgPoint)
+                    onAnnotationsChanged?(annotations)
+                }
+            } else if dragMode == .move, let idx = movingAnnotationIndex {
+                // Move selected annotation
                 let dx = imgPoint.x - dragOriginalPosition.x
                 let dy = imgPoint.y - dragOriginalPosition.y
                 if dx != 0 || dy != 0 {
@@ -215,7 +364,10 @@ class AnnotationCanvasView: NSView {
         let imgPoint = viewToImage(viewPoint)
 
         if currentTool == .select {
+            dragMode = .none
             movingAnnotationIndex = nil
+            resizingHandleIndex = -1
+            updateCursor(at: viewPoint)
             return
         }
 
@@ -224,15 +376,9 @@ class AnnotationCanvasView: NSView {
         guard dist > 3 else { return }
 
         if currentTool == .text {
-            promptForText { [weak self] text in
-                guard let self = self, let text = text, !text.isEmpty else { return }
-                self.pushUndo()
-                var annotation = self.makeAnnotation(from: self.dragStart, to: imgPoint)
-                annotation.text = text
-                self.annotations.append(annotation)
-                self.selectedAnnotationId = annotation.id
-                self.onAnnotationsChanged?(self.annotations)
-            }
+            let annotation = makeAnnotation(from: dragStart, to: imgPoint)
+            pendingTextGeometry = annotation.geometry
+            beginInlineEdit(geometry: annotation.geometry, existingText: "", annotationIndex: nil)
         } else {
             pushUndo()
             let annotation = makeAnnotation(from: dragStart, to: imgPoint)
@@ -245,7 +391,9 @@ class AnnotationCanvasView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 51 || event.charactersIgnoringModifiers == "\u{7F}" { // Delete/Backspace
+        if event.keyCode == 53 { // Escape
+            selectedAnnotationId = nil
+        } else if event.keyCode == 51 || event.charactersIgnoringModifiers == "\u{7F}" { // Delete/Backspace
             deleteSelected()
         } else if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "z" {
             if event.modifierFlags.contains(.shift) { redo() } else { undo() }
@@ -256,13 +404,42 @@ class AnnotationCanvasView: NSView {
 
     // MARK: - Annotation creation
 
+    func updateSelectedColor(_ color: NSColor) {
+        guard let selId = selectedAnnotationId,
+              let idx = annotations.firstIndex(where: { $0.id == selId }) else { return }
+        pushUndo()
+        annotations[idx].style.color = color.hexString
+        overlayView.needsDisplay = true
+        onAnnotationsChanged?(annotations)
+    }
+
+    func updateSelectedLineWidth(_ width: CGFloat) {
+        guard let selId = selectedAnnotationId,
+              let idx = annotations.firstIndex(where: { $0.id == selId }) else { return }
+        guard annotations[idx].type != .rectangle || annotations[idx].style.fill != .highlight else { return }
+        pushUndo()
+        annotations[idx].style.lineWidth = width
+        overlayView.needsDisplay = true
+        onAnnotationsChanged?(annotations)
+    }
+
+    func updateSelectedFontSize(_ size: CGFloat) {
+        guard let selId = selectedAnnotationId,
+              let idx = annotations.firstIndex(where: { $0.id == selId }),
+              annotations[idx].type == .text else { return }
+        pushUndo()
+        annotations[idx].style.fontSize = size
+        overlayView.needsDisplay = true
+        onAnnotationsChanged?(annotations)
+    }
+
     private func makeAnnotation(from start: NSPoint, to end: NSPoint) -> Annotation {
         let style = AnnotationStyle(
             color: currentColor.hexString,
-            lineWidth: currentTool == .highlight ? 0 : 3,
+            lineWidth: currentTool == .highlight ? 0 : currentLineWidth,
             opacity: currentTool == .highlight ? 0.3 : 1.0,
             fill: currentTool == .highlight ? .highlight : (currentTool == .rectangle ? .outline : nil),
-            fontSize: currentTool == .text ? 16 : nil
+            fontSize: currentTool == .text ? currentFontSize : nil
         )
 
         let geometry: AnnotationGeometry
@@ -311,19 +488,191 @@ class AnnotationCanvasView: NSView {
         annotations[index] = a
     }
 
-    // MARK: - Text input
+    private func resizeAnnotation(at index: Int, handleIndex: Int, to point: NSPoint) {
+        var a = annotations[index]
+        switch a.type {
+        case .arrow:
+            if handleIndex == 0 {
+                a.geometry.startX = point.x
+                a.geometry.startY = point.y
+            } else {
+                a.geometry.endX = point.x
+                a.geometry.endY = point.y
+            }
+        case .rectangle, .text:
+            let newRect = normalizedRect(from: resizeAnchor, to: point)
+            a.geometry.x = newRect.origin.x
+            a.geometry.y = newRect.origin.y
+            a.geometry.width = newRect.width
+            a.geometry.height = a.type == .text ? max(newRect.height, 30) : newRect.height
+        }
+        annotations[index] = a
+    }
 
-    private func promptForText(completion: @escaping (String?) -> Void) {
-        let alert = NSAlert()
-        alert.messageText = "Enter annotation text"
-        alert.addButton(withTitle: "OK")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 250, height: 24))
-        field.placeholderString = "Type here..."
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        let response = alert.runModal()
-        completion(response == .alertFirstButtonReturn ? field.stringValue : nil)
+    // MARK: - Cursor feedback
+
+    override func mouseMoved(with event: NSEvent) {
+        let viewPoint = convert(event.locationInWindow, from: nil)
+        updateCursor(at: viewPoint)
+    }
+
+    private func updateCursor(at viewPoint: NSPoint) {
+        guard currentTool == .select else {
+            NSCursor.crosshair.set()
+            return
+        }
+
+        if hitTestHandle(at: viewPoint) != nil {
+            NSCursor.crosshair.set()
+        } else if selectedAnnotationId != nil, hitTestAnnotation(at: viewPoint) != nil {
+            NSCursor.openHand.set()
+        } else {
+            NSCursor.arrow.set()
+        }
+    }
+
+    // MARK: - Inline text editing
+
+    private func beginInlineEdit(geometry: AnnotationGeometry, existingText: String, annotationIndex: Int?) {
+        // Cancel any existing edit first
+        if inlineTextField != nil { cancelInlineEdit() }
+
+        guard let imageRect = geometry.rect else { return }
+        let viewRect = overlayView.imageRectToView(imageRect)
+
+        editingAnnotationIndex = annotationIndex
+
+        // Hide the annotation being edited so text doesn't render twice
+        if let idx = annotationIndex {
+            overlayView.hiddenAnnotationId = annotations[idx].id
+            overlayView.needsDisplay = true
+        }
+
+        let s = overlayView.imageRect.width > 0 ? overlayView.imageRect.width / overlayView.imageSize.width : 1
+        let baseFontSize: CGFloat
+        if let idx = annotationIndex {
+            baseFontSize = annotations[idx].style.fontSize ?? currentFontSize
+        } else {
+            baseFontSize = currentFontSize
+        }
+        let font = NSFont.systemFont(ofSize: baseFontSize * s, weight: .bold)
+
+        let tf = NSTextField()
+        tf.stringValue = existingText
+        tf.font = font
+        tf.textColor = currentColor
+        tf.isBordered = false
+        tf.isBezeled = false
+        tf.drawsBackground = true
+        tf.backgroundColor = NSColor.black.withAlphaComponent(0.15)
+        tf.focusRingType = .none
+        tf.isEditable = true
+        tf.isSelectable = true
+        tf.placeholderString = "Type text..."
+        tf.delegate = self
+        tf.frame = viewRect
+
+        // If editing an existing annotation, use its color
+        if let idx = annotationIndex {
+            tf.textColor = NSColor(hexString: annotations[idx].style.color)
+        }
+
+        addSubview(tf)
+        window?.makeFirstResponder(tf)
+        inlineTextField = tf
+    }
+
+    private func commitInlineEdit() {
+        guard let tf = inlineTextField else { return }
+        let text = tf.stringValue
+
+        if let idx = editingAnnotationIndex {
+            // Editing existing annotation
+            if !text.isEmpty && text != (annotations[idx].text ?? "") {
+                pushUndo()
+                annotations[idx].text = text
+                onAnnotationsChanged?(annotations)
+            }
+            overlayView.hiddenAnnotationId = nil
+        } else if let geometry = pendingTextGeometry, !text.isEmpty {
+            // Creating new annotation
+            pushUndo()
+            var annotation = Annotation(
+                type: .text,
+                geometry: geometry,
+                style: AnnotationStyle(
+                    color: currentColor.hexString,
+                    lineWidth: 0,
+                    opacity: 1.0,
+                    fontSize: currentFontSize
+                )
+            )
+            annotation.text = text
+            annotations.append(annotation)
+            selectedAnnotationId = annotation.id
+            onAnnotationsChanged?(annotations)
+        }
+
+        cleanupInlineEdit()
+    }
+
+    private func cancelInlineEdit() {
+        // Restore hidden annotation without changes
+        if editingAnnotationIndex != nil {
+            overlayView.hiddenAnnotationId = nil
+        }
+        cleanupInlineEdit()
+    }
+
+    private func cleanupInlineEdit() {
+        inlineTextField?.removeFromSuperview()
+        inlineTextField = nil
+        editingAnnotationIndex = nil
+        pendingTextGeometry = nil
+        overlayView.needsDisplay = true
+        window?.makeFirstResponder(self)
+    }
+
+    private func repositionInlineTextField() {
+        guard let tf = inlineTextField else { return }
+
+        let geometry: AnnotationGeometry?
+        if let idx = editingAnnotationIndex {
+            geometry = annotations[idx].geometry
+        } else {
+            geometry = pendingTextGeometry
+        }
+        guard let geom = geometry, let imageRect = geom.rect else { return }
+
+        let viewRect = overlayView.imageRectToView(imageRect)
+        tf.frame = viewRect
+
+        // Update font size for new scale
+        let s = overlayView.imageRect.width > 0 ? overlayView.imageRect.width / overlayView.imageSize.width : 1
+        let baseFontSize: CGFloat
+        if let idx = editingAnnotationIndex {
+            baseFontSize = annotations[idx].style.fontSize ?? currentFontSize
+        } else {
+            baseFontSize = currentFontSize
+        }
+        tf.font = NSFont.systemFont(ofSize: baseFontSize * s, weight: .bold)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(insertNewline(_:)) {
+            commitInlineEdit()
+            return true
+        }
+        if commandSelector == #selector(cancelOperation(_:)) {
+            cancelInlineEdit()
+            return true
+        }
+        return false
+    }
+
+    private func editTextAnnotation(at index: Int) {
+        let current = annotations[index].text ?? ""
+        beginInlineEdit(geometry: annotations[index].geometry, existingText: current, annotationIndex: index)
     }
 
     // MARK: - Export

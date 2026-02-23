@@ -7,8 +7,9 @@
 
 use screenlens_core::{
     ai::{AiClient, AnalysisResult},
+    capture::CaptureMode,
     config::AiConfig,
-    db::Database,
+    db::{Database, ScreenshotRecord},
 };
 use std::ffi::{CStr, CString};
 use std::os::raw::c_char;
@@ -127,6 +128,87 @@ pub extern "C" fn sl_db_list_recent(db: *mut SlDatabase, limit: u32, offset: u32
         }
         Err(_) => ptr::null_mut(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot save
+// ---------------------------------------------------------------------------
+
+/// Save a screenshot (PNG bytes) to disk and insert a database record.
+/// Returns a JSON string with `{ id, filepath, filename, size_bytes, mode, captured_at }`
+/// or null on error. The returned string must be freed with `sl_free_string`.
+#[unsafe(no_mangle)]
+pub extern "C" fn sl_screenshot_save(
+    db: *mut SlDatabase,
+    image_data: *const u8,
+    image_len: usize,
+    save_dir: *const c_char,
+    mode: *const c_char,
+) -> *mut c_char {
+    if db.is_null() || image_data.is_null() || image_len == 0 {
+        return ptr::null_mut();
+    }
+
+    let db = unsafe { &*db };
+    let save_dir_str = unsafe { cstr_to_str(save_dir) };
+    let mode_str = unsafe { cstr_to_str(mode) };
+    let bytes = unsafe { std::slice::from_raw_parts(image_data, image_len) };
+
+    // Create save directory if needed
+    let save_path = Path::new(save_dir_str);
+    if std::fs::create_dir_all(save_path).is_err() {
+        return ptr::null_mut();
+    }
+
+    // Generate timestamped filename (same pattern as ScreenCapture::save_and_build)
+    let timestamp = chrono::Utc::now();
+    let id = uuid::Uuid::new_v4();
+    let filename = format!(
+        "{}_{}.png",
+        timestamp.format("%Y%m%d_%H%M%S"),
+        &id.to_string()[..8]
+    );
+    let filepath = save_path.join(&filename);
+
+    // Write PNG data to disk
+    if std::fs::write(&filepath, bytes).is_err() {
+        return ptr::null_mut();
+    }
+
+    // Parse capture mode
+    let capture_mode = match mode_str {
+        "region" => CaptureMode::Region,
+        "window" => CaptureMode::Window,
+        _ => CaptureMode::Fullscreen,
+    };
+
+    // Insert database record
+    let record = ScreenshotRecord {
+        id,
+        filepath: filepath.to_string_lossy().into_owned(),
+        filename: filename.clone(),
+        captured_at: timestamp,
+        mode: capture_mode,
+        size_bytes: image_len as u64,
+        width: None,
+        height: None,
+    };
+
+    if db.inner.insert_screenshot(&record).is_err() {
+        return ptr::null_mut();
+    }
+
+    // Return JSON with saved info
+    let result = serde_json::json!({
+        "id": id.to_string(),
+        "filepath": filepath.to_string_lossy(),
+        "filename": filename,
+        "size_bytes": image_len,
+        "mode": mode_str,
+        "captured_at": timestamp.to_rfc3339(),
+    });
+
+    to_c_string(&result.to_string())
 }
 
 // ---------------------------------------------------------------------------

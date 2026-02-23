@@ -194,7 +194,7 @@ class BrowseSidebarView: NSView {
                     return SidebarItem(kind: .day(year: r.year, month: r.month, day: r.day), title: dayTitle, count: r.count)
                 }
 
-                let monthName = (m >= 1 && m <= 12) ? monthSymbols[m - 1] : "Month \(m)"
+                let monthName = (m >= 1 && m <= 12) ? monthSymbols[m - 1].capitalized : "Month \(m)"
                 months.append(SidebarItem(kind: .month(year: y, month: m), title: monthName, count: monthCount, children: days))
             }
 
@@ -205,13 +205,7 @@ class BrowseSidebarView: NSView {
     }
 
     private func dayLabel(year: Int, month: Int, day: Int) -> String {
-        var comps = DateComponents()
-        comps.year = year; comps.month = month; comps.day = day
-        let cal = Calendar(identifier: .gregorian)
-        guard let date = cal.date(from: comps) else { return "\(day)" }
-        let fmt = DateFormatter()
-        fmt.dateFormat = "EEE d"
-        return fmt.string(from: date)
+        return "\(day)"
     }
 }
 
