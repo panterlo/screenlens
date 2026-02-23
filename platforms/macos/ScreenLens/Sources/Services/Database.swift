@@ -204,6 +204,14 @@ class ScreenLensDatabase {
         }
     }
 
+    // MARK: - Delete screenshot
+
+    func deleteScreenshot(id: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM screenshots WHERE id = ?", arguments: [id])
+        }
+    }
+
     // MARK: - Update annotations
 
     func updateAnnotations(id: String, annotations: [Annotation]) throws {

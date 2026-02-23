@@ -3,8 +3,8 @@ import AppKit
 /// Native gallery window for browsing, searching, and filtering screenshots.
 class GalleryWindowController: NSWindowController {
 
-    private var searchField: NSSearchField!
-    private var filterBar: FilterBarView!
+    private var modePopup: NSPopUpButton!
+    private var datePopup: NSPopUpButton!
     private var browseSidebar: BrowseSidebarView!
     private var collectionView: NSCollectionView!
     private var detailView: ScreenshotDetailView!
@@ -25,28 +25,31 @@ class GalleryWindowController: NSWindowController {
         window.center()
         window.isReleasedWhenClosed = false
         window.minSize = NSSize(width: 700, height: 400)
+        window.toolbarStyle = .unified
 
         self.init(window: window)
         self.database = database
+        setupToolbar()
         setupUI()
         loadRecent()
     }
 
+    override func showWindow(_ sender: Any?) {
+        super.showWindow(sender)
+        loadRecent()
+    }
+
+    // MARK: - NSToolbar
+
+    private func setupToolbar() {
+        let toolbar = NSToolbar(identifier: "GalleryToolbar")
+        toolbar.delegate = self
+        toolbar.displayMode = .iconOnly
+        window?.toolbar = toolbar
+    }
+
     private func setupUI() {
         guard let contentView = window?.contentView else { return }
-
-        // Search bar
-        searchField = NSSearchField()
-        searchField.placeholderString = "Search screenshots..."
-        searchField.translatesAutoresizingMaskIntoConstraints = false
-        searchField.target = self
-        searchField.action = #selector(searchChanged)
-        contentView.addSubview(searchField)
-
-        // Filter bar
-        filterBar = FilterBarView()
-        filterBar.onFiltersChanged = { [weak self] _ in self?.performSearch() }
-        contentView.addSubview(filterBar)
 
         // Split view: browse sidebar | grid | detail
         splitView = NSSplitView()
@@ -60,8 +63,6 @@ class GalleryWindowController: NSWindowController {
             self?.sidebarFilter = filter
             self?.performSearch()
         }
-
-        // No extra container — BrowseSidebarView has its own scroll view
 
         // Center: collection view
         let layout = NSCollectionViewFlowLayout()
@@ -103,7 +104,10 @@ class GalleryWindowController: NSWindowController {
             self?.openAnnotationEditor(for: screenshot)
         }
 
-        let detailContainer = NSView()
+        let detailContainer = NSVisualEffectView()
+        detailContainer.material = .sidebar
+        detailContainer.blendingMode = .behindWindow
+        detailContainer.state = .active
         detailContainer.translatesAutoresizingMaskIntoConstraints = false
         detailContainer.addSubview(detailView)
         NSLayoutConstraint.activate([
@@ -124,15 +128,7 @@ class GalleryWindowController: NSWindowController {
 
         // Layout
         NSLayoutConstraint.activate([
-            searchField.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 12),
-            searchField.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
-            searchField.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-
-            filterBar.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 8),
-            filterBar.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 12),
-            filterBar.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -12),
-
-            splitView.topAnchor.constraint(equalTo: filterBar.bottomAnchor, constant: 8),
+            splitView.topAnchor.constraint(equalTo: contentView.topAnchor),
             splitView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
             splitView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
             splitView.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
@@ -171,13 +167,43 @@ class GalleryWindowController: NSWindowController {
         refreshSidebar()
     }
 
-    @objc private func searchChanged() {
+    @objc private func searchChanged(_ sender: Any?) {
         performSearch()
     }
 
+    @objc private func filterChanged(_ sender: Any?) {
+        performSearch()
+    }
+
+    private var currentFilters: GalleryFilters {
+        let mode: CaptureMode?
+        switch modePopup?.indexOfSelectedItem {
+        case 1: mode = .fullscreen
+        case 2: mode = .window
+        case 3: mode = .region
+        default: mode = nil
+        }
+
+        let dateRange: DateRange?
+        switch datePopup?.indexOfSelectedItem {
+        case 1: dateRange = .today
+        case 2: dateRange = .lastWeek
+        case 3: dateRange = .lastMonth
+        default: dateRange = nil
+        }
+
+        return GalleryFilters(mode: mode, dateRange: dateRange, appName: nil)
+    }
+
     private func performSearch() {
-        let query = searchField.stringValue
-        let filters = filterBar.currentFilters
+        // Read search text from the NSSearchToolbarItem
+        let query: String
+        if let searchItem = window?.toolbar?.items.first(where: { $0.itemIdentifier.rawValue == "gallerySearch" }) as? NSSearchToolbarItem {
+            query = searchItem.searchField.stringValue
+        } else {
+            query = ""
+        }
+        let filters = currentFilters
 
         if query.isEmpty && filters.isEmpty && sidebarFilter.isEmpty {
             loadRecent()
@@ -256,6 +282,9 @@ extension GalleryWindowController: NSCollectionViewDataSource {
             cell.onDoubleClick = { [weak self] screenshot in
                 self?.openAnnotationEditor(for: screenshot)
             }
+            cell.onContextMenu = { [weak self] screenshot, event in
+                self?.buildContextMenu(for: screenshot)
+            }
         }
         return item
     }
@@ -279,10 +308,160 @@ extension GalleryWindowController: NSCollectionViewDelegate {
     }
 }
 
-// MARK: - ScreenshotCell (double-click support via subclass)
+// MARK: - NSToolbarDelegate
+
+private extension NSToolbarItem.Identifier {
+    static let modeFilter = NSToolbarItem.Identifier("modeFilter")
+    static let dateFilter = NSToolbarItem.Identifier("dateFilter")
+    static let gallerySearch = NSToolbarItem.Identifier("gallerySearch")
+}
+
+extension GalleryWindowController: NSToolbarDelegate {
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.modeFilter, .dateFilter, .flexibleSpace, .gallerySearch]
+    }
+
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        [.modeFilter, .dateFilter, .flexibleSpace, .gallerySearch]
+    }
+
+    func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        switch itemIdentifier {
+        case .modeFilter:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+            popup.addItems(withTitles: ["All Modes", "Fullscreen", "Window", "Region"])
+            popup.target = self
+            popup.action = #selector(filterChanged(_:))
+            popup.sizeToFit()
+            modePopup = popup
+            item.view = popup
+            item.label = "Mode"
+            return item
+
+        case .dateFilter:
+            let item = NSToolbarItem(itemIdentifier: itemIdentifier)
+            let popup = NSPopUpButton(frame: .zero, pullsDown: false)
+            popup.addItems(withTitles: ["Any Time", "Today", "Last 7 Days", "Last 30 Days"])
+            popup.target = self
+            popup.action = #selector(filterChanged(_:))
+            popup.sizeToFit()
+            datePopup = popup
+            item.view = popup
+            item.label = "Date"
+            return item
+
+        case .gallerySearch:
+            let item = NSSearchToolbarItem(itemIdentifier: itemIdentifier)
+            item.searchField.placeholderString = "Search screenshots..."
+            item.searchField.target = self
+            item.searchField.action = #selector(searchChanged(_:))
+            return item
+
+        default:
+            return nil
+        }
+    }
+}
+
+// MARK: - Context Menu
+
+extension GalleryWindowController {
+    func buildContextMenu(for screenshot: Screenshot) -> NSMenu {
+        let menu = NSMenu()
+
+        let openItem = NSMenuItem(title: "Open in Preview", action: #selector(contextOpenInPreview(_:)), keyEquivalent: "")
+        openItem.representedObject = screenshot
+        openItem.target = self
+        menu.addItem(openItem)
+
+        let annotateItem = NSMenuItem(title: "Annotate", action: #selector(contextAnnotate(_:)), keyEquivalent: "")
+        annotateItem.representedObject = screenshot
+        annotateItem.target = self
+        menu.addItem(annotateItem)
+
+        let copyItem = NSMenuItem(title: "Copy Image", action: #selector(contextCopyImage(_:)), keyEquivalent: "")
+        copyItem.representedObject = screenshot
+        copyItem.target = self
+        menu.addItem(copyItem)
+
+        let exportItem = NSMenuItem(title: "Export PNG...", action: #selector(contextExportPNG(_:)), keyEquivalent: "")
+        exportItem.representedObject = screenshot
+        exportItem.target = self
+        menu.addItem(exportItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let deleteItem = NSMenuItem(title: "Delete", action: #selector(contextDelete(_:)), keyEquivalent: "")
+        deleteItem.representedObject = screenshot
+        deleteItem.target = self
+        menu.addItem(deleteItem)
+
+        return menu
+    }
+
+    @objc private func contextOpenInPreview(_ sender: NSMenuItem) {
+        guard let screenshot = sender.representedObject as? Screenshot else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: screenshot.filepath))
+    }
+
+    @objc private func contextAnnotate(_ sender: NSMenuItem) {
+        guard let screenshot = sender.representedObject as? Screenshot else { return }
+        openAnnotationEditor(for: screenshot)
+    }
+
+    @objc private func contextCopyImage(_ sender: NSMenuItem) {
+        guard let screenshot = sender.representedObject as? Screenshot else { return }
+        guard let image = NSImage(contentsOfFile: screenshot.filepath),
+              let tiff = image.tiffRepresentation else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setData(tiff, forType: .tiff)
+    }
+
+    @objc private func contextExportPNG(_ sender: NSMenuItem) {
+        guard let screenshot = sender.representedObject as? Screenshot else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.png]
+        panel.nameFieldStringValue = screenshot.filename
+        panel.beginSheetModal(for: window!) { response in
+            if response == .OK, let url = panel.url {
+                try? FileManager.default.copyItem(
+                    at: URL(fileURLWithPath: screenshot.filepath), to: url)
+            }
+        }
+    }
+
+    @objc private func contextDelete(_ sender: NSMenuItem) {
+        guard let screenshot = sender.representedObject as? Screenshot else { return }
+        // Defer so the context menu fully dismisses before the alert appears
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.window != nil else { return }
+            let alert = NSAlert()
+            alert.messageText = "Delete Screenshot?"
+            alert.informativeText = "This will permanently remove the screenshot and its file from disk."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Delete")
+            alert.addButton(withTitle: "Cancel")
+            let response = alert.runModal()
+            guard response == .alertFirstButtonReturn else { return }
+            do {
+                try self.database?.deleteScreenshot(id: screenshot.id)
+                try? FileManager.default.removeItem(atPath: screenshot.filepath)
+                self.loadRecent()
+                self.detailView.clear()
+            } catch {
+                NSLog("Failed to delete screenshot: \(error)")
+            }
+        }
+    }
+}
+
+// MARK: - ScreenshotCell (double-click + context menu support via subclass)
 
 class ScreenshotCellView: NSView {
     var onDoubleClick: (() -> Void)?
+    var onContextMenu: ((NSEvent) -> NSMenu?)?
 
     override func mouseDown(with event: NSEvent) {
         super.mouseDown(with: event)
@@ -290,7 +469,14 @@ class ScreenshotCellView: NSView {
             onDoubleClick?()
         }
     }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        return onContextMenu?(event)
+    }
 }
+
+private let thumbnailCache = NSCache<NSString, NSImage>()
+private let thumbnailQueue = DispatchQueue(label: "com.screenlens.thumbnails", qos: .userInitiated, attributes: .concurrent)
 
 class ScreenshotCell: NSCollectionViewItem {
     private let thumbnailView = NSImageView()
@@ -299,7 +485,9 @@ class ScreenshotCell: NSCollectionViewItem {
     private let metaLabel = NSTextField(labelWithString: "")
     private let tagsLabel = NSTextField(labelWithString: "")
     var onDoubleClick: ((Screenshot) -> Void)?
+    var onContextMenu: ((Screenshot, NSEvent) -> NSMenu?)?
     private var screenshot: Screenshot?
+    private var loadingId: String?
 
     override func loadView() {
         let cellView = ScreenshotCellView()
@@ -308,6 +496,10 @@ class ScreenshotCell: NSCollectionViewItem {
         cellView.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
         cellView.onDoubleClick = { [weak self] in
             if let s = self?.screenshot { self?.onDoubleClick?(s) }
+        }
+        cellView.onContextMenu = { [weak self] event in
+            guard let s = self?.screenshot else { return nil }
+            return self?.onContextMenu?(s, event)
         }
         view = cellView
 
@@ -371,13 +563,44 @@ class ScreenshotCell: NSCollectionViewItem {
         }
     }
 
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        loadingId = nil
+        thumbnailView.image = nil
+    }
+
     func configure(with screenshot: Screenshot) {
         self.screenshot = screenshot
-        thumbnailView.image = NSImage(contentsOfFile: screenshot.filepath)
+        self.loadingId = screenshot.id
+
+        // Load thumbnail async with cache
+        let cacheKey = screenshot.id as NSString
+        if let cached = thumbnailCache.object(forKey: cacheKey) {
+            thumbnailView.image = cached
+        } else {
+            thumbnailView.image = nil
+            let path = screenshot.filepath
+            let id = screenshot.id
+            thumbnailQueue.async { [weak self] in
+                guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return }
+                let options: [CFString: Any] = [
+                    kCGImageSourceThumbnailMaxPixelSize: 480,
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                ]
+                guard let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return }
+                let thumb = NSImage(cgImage: cgThumb, size: NSSize(width: cgThumb.width, height: cgThumb.height))
+                thumbnailCache.setObject(thumb, forKey: cacheKey)
+                DispatchQueue.main.async {
+                    guard self?.loadingId == id else { return }
+                    self?.thumbnailView.image = thumb
+                }
+            }
+        }
+
         modeIcon.image = NSImage(systemSymbolName: screenshot.mode.sfSymbol, accessibilityDescription: screenshot.mode.displayName)
         summaryLabel.stringValue = screenshot.summary ?? "No analysis yet"
 
-        // "App · Date" meta line
         let app = screenshot.application ?? "Unknown"
         let fmt = DateFormatter()
         fmt.dateStyle = .short

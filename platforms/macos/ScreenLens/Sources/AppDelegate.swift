@@ -4,6 +4,7 @@ import ScreenCaptureKit
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var galleryWindowController: GalleryWindowController?
+    private var settingsWindowController: SettingsWindowController?
 
     private var database: ScreenLensDatabase?
     private var screenshotStore: ScreenshotStore?
@@ -25,8 +26,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         log("applicationDidFinishLaunching")
+        NSApp.setActivationPolicy(.regular)
         initCore()
         log("initCore done")
+        setupMainMenu()
         setupStatusBarItem()
         log("setupStatusBarItem done")
         registerGlobalHotkeys()
@@ -38,6 +41,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        HotkeyManager.shared.unregister()
         database = nil
         screenshotStore = nil
         aiClient = nil
@@ -77,6 +81,80 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Main Menu Bar
+
+    private func setupMainMenu() {
+        let mainMenu = NSMenu()
+
+        // App menu (ScreenLens)
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "About ScreenLens", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        appMenu.addItem(settingsItem)
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(withTitle: "Quit ScreenLens", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // File menu
+        let fileMenuItem = NSMenuItem()
+        let fileMenu = NSMenu(title: "File")
+        let captureFullItem = fileMenu.addItem(withTitle: "Capture Fullscreen", action: #selector(captureFullscreen), keyEquivalent: "f")
+        captureFullItem.keyEquivalentModifierMask = [.command, .shift]
+        let captureRegionItem = fileMenu.addItem(withTitle: "Capture Region", action: #selector(captureRegion), keyEquivalent: "r")
+        captureRegionItem.keyEquivalentModifierMask = [.command, .shift]
+        let captureWindowItem = fileMenu.addItem(withTitle: "Capture Window", action: #selector(captureWindow), keyEquivalent: "w")
+        captureWindowItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(NSMenuItem.separator())
+        fileMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        fileMenuItem.submenu = fileMenu
+        mainMenu.addItem(fileMenuItem)
+
+        // Edit menu
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redoItem = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redoItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        // View menu
+        let viewMenuItem = NSMenuItem()
+        let viewMenu = NSMenu(title: "View")
+        viewMenu.addItem(withTitle: "Open Gallery", action: #selector(openGallery), keyEquivalent: "g")
+        viewMenuItem.submenu = viewMenu
+        mainMenu.addItem(viewMenuItem)
+
+        // Window menu
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(NSMenuItem.separator())
+        windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+        NSApp.windowsMenu = windowMenu
+
+        // Help menu
+        let helpMenuItem = NSMenuItem()
+        let helpMenu = NSMenu(title: "Help")
+        helpMenuItem.submenu = helpMenu
+        mainMenu.addItem(helpMenuItem)
+        NSApp.helpMenu = helpMenu
+
+        NSApp.mainMenu = mainMenu
+    }
+
     // MARK: - Status Bar (Tray)
 
     private func setupStatusBarItem() {
@@ -92,13 +170,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         fputs("ScreenLens: status bar item created\n", stderr)
 
         let menu = NSMenu()
-        menu.addItem(withTitle: "Capture Fullscreen", action: #selector(captureFullscreen), keyEquivalent: "F")
-        menu.addItem(withTitle: "Capture Region", action: #selector(captureRegion), keyEquivalent: "R")
-        menu.addItem(withTitle: "Capture Window", action: #selector(captureWindow), keyEquivalent: "W")
+        menu.addItem(withTitle: "Capture Fullscreen", action: #selector(captureFullscreen), keyEquivalent: "")
+        menu.addItem(withTitle: "Capture Region", action: #selector(captureRegion), keyEquivalent: "")
+        menu.addItem(withTitle: "Capture Window", action: #selector(captureWindow), keyEquivalent: "")
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(withTitle: "Open Gallery", action: #selector(openGallery), keyEquivalent: "G")
+        menu.addItem(withTitle: "Open Gallery", action: #selector(openGallery), keyEquivalent: "")
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "q")
+        let traySettingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: "")
+        traySettingsItem.target = self
+        menu.addItem(traySettingsItem)
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(withTitle: "Quit", action: #selector(quit), keyEquivalent: "")
 
         statusItem.menu = menu
     }
@@ -106,8 +188,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Global Hotkeys
 
     private func registerGlobalHotkeys() {
-        // TODO: Register Ctrl+Shift+F/R/W/G using Carbon hotkey APIs
-        // or NSEvent.addGlobalMonitorForEvents
+        guard let cfg = config else { return }
+        let actions = HotkeyManager.Actions(
+            captureFullscreen: { [weak self] in self?.captureFullscreen() },
+            captureRegion: { [weak self] in self?.captureRegion() },
+            captureWindow: { [weak self] in self?.captureWindow() },
+            openGallery: { [weak self] in self?.openGallery() }
+        )
+        HotkeyManager.shared.register(shortcuts: cfg.hotkeys, actions: actions)
+    }
+
+    // MARK: - Settings
+
+    @objc private func openSettings() {
+        guard let cfg = config else { return }
+        if settingsWindowController == nil {
+            settingsWindowController = SettingsWindowController(config: cfg)
+            settingsWindowController?.onHotkeysChanged = { [weak self] newHotkeys in
+                self?.config?.hotkeys = newHotkeys
+                self?.registerGlobalHotkeys()
+            }
+        }
+        settingsWindowController?.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     // MARK: - Capture Actions

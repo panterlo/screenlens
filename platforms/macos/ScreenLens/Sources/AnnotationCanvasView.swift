@@ -564,7 +564,7 @@ class AnnotationCanvasView: NSView, NSTextFieldDelegate {
         tf.isBordered = false
         tf.isBezeled = false
         tf.drawsBackground = true
-        tf.backgroundColor = NSColor.black.withAlphaComponent(0.15)
+        tf.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.85)
         tf.focusRingType = .none
         tf.isEditable = true
         tf.isSelectable = true

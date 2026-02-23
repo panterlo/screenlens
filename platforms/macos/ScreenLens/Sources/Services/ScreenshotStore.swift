@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 
 /// Saves screenshot images to disk and inserts database records.
 /// Matches the Rust `sl_screenshot_save` FFI function behavior.
@@ -39,6 +40,15 @@ class ScreenshotStore {
         isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let capturedAt = isoFormatter.string(from: now)
 
+        // Read image dimensions from PNG data
+        var imgWidth: Int?
+        var imgHeight: Int?
+        if let source = CGImageSourceCreateWithData(imageData as CFData, nil),
+           let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] {
+            imgWidth = props[kCGImagePropertyPixelWidth] as? Int
+            imgHeight = props[kCGImagePropertyPixelHeight] as? Int
+        }
+
         // Insert DB record
         let id = UUID().uuidString.lowercased()
         try database.insertScreenshot(
@@ -48,6 +58,8 @@ class ScreenshotStore {
             capturedAt: capturedAt,
             mode: mode,
             sizeBytes: Int64(imageData.count),
+            width: imgWidth,
+            height: imgHeight,
             application: windowInfo?.appName,
             windowTitle: windowInfo?.windowTitle,
             bundleId: windowInfo?.bundleId,
