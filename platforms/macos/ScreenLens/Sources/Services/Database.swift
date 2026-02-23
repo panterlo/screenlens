@@ -1,6 +1,14 @@
 import Foundation
 import GRDB
 
+struct DateGroupRow {
+    let year: Int, month: Int, day: Int, count: Int
+}
+
+struct AppGroupRow {
+    let name: String, count: Int
+}
+
 /// Native SQLite database wrapper — replaces the Rust FFI database layer.
 /// Schema is identical to `crates/core/src/db/mod.rs` so databases are portable.
 class ScreenLensDatabase {
@@ -167,6 +175,44 @@ class ScreenLensDatabase {
         }
     }
 
+    // MARK: - Sidebar aggregation queries
+
+    func fetchDateGroups() throws -> [DateGroupRow] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT CAST(strftime('%Y', captured_at) AS INTEGER),
+                       CAST(strftime('%m', captured_at) AS INTEGER),
+                       CAST(strftime('%d', captured_at) AS INTEGER),
+                       COUNT(*)
+                FROM screenshots
+                GROUP BY 1, 2, 3
+                ORDER BY 1 DESC, 2 DESC, 3 DESC
+                """)
+            return rows.map { row in
+                DateGroupRow(
+                    year: row[0] as Int,
+                    month: row[1] as Int,
+                    day: row[2] as Int,
+                    count: row[3] as Int
+                )
+            }
+        }
+    }
+
+    func fetchAppGroups() throws -> [AppGroupRow] {
+        try dbQueue.read { db in
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT COALESCE(application, 'Unknown'), COUNT(*)
+                FROM screenshots
+                GROUP BY 1
+                ORDER BY 2 DESC
+                """)
+            return rows.map { row in
+                AppGroupRow(name: row[0] as String, count: row[1] as Int)
+            }
+        }
+    }
+
     // MARK: - FTS5 search (matches Rust search)
 
     func search(text: String, limit: Int = 50, offset: Int = 0) throws -> [Screenshot] {
@@ -185,7 +231,7 @@ class ScreenLensDatabase {
 
     // MARK: - Filtered search (text + mode/date/app filters)
 
-    func searchFiltered(text: String, filters: GalleryFilters, limit: Int = 50, offset: Int = 0) throws -> [Screenshot] {
+    func searchFiltered(text: String, filters: GalleryFilters, sidebarFilter: SidebarFilter = SidebarFilter(), limit: Int = 50, offset: Int = 0) throws -> [Screenshot] {
         var conditions: [String] = []
         var args: [DatabaseValueConvertible?] = []
 
@@ -206,16 +252,32 @@ class ScreenLensDatabase {
             args.append(mode.rawValue)
         }
 
-        // Date filter
+        // Date filter (from filter bar)
         if let dateRange = filters.dateRange {
             conditions.append("captured_at >= ?")
             args.append(dateRange.startDate)
         }
 
-        // App name filter
+        // App name filter (from filter bar — LIKE match)
         if let app = filters.appName, !app.isEmpty {
             conditions.append("application LIKE ?")
             args.append("%\(app)%")
+        }
+
+        // Sidebar date range filter (AND with filter bar)
+        if let dateStart = sidebarFilter.dateStart {
+            conditions.append("captured_at >= ?")
+            args.append(dateStart)
+        }
+        if let dateEnd = sidebarFilter.dateEnd {
+            conditions.append("captured_at < ?")
+            args.append(dateEnd)
+        }
+
+        // Sidebar app exact match filter
+        if let app = sidebarFilter.application {
+            conditions.append("application = ?")
+            args.append(app)
         }
 
         var sql = baseQuery

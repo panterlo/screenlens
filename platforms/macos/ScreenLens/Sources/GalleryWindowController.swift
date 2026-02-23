@@ -5,12 +5,14 @@ class GalleryWindowController: NSWindowController {
 
     private var searchField: NSSearchField!
     private var filterBar: FilterBarView!
+    private var browseSidebar: BrowseSidebarView!
     private var collectionView: NSCollectionView!
     private var detailView: ScreenshotDetailView!
     private var emptyLabel: NSTextField!
     private var splitView: NSSplitView!
     var database: ScreenLensDatabase?
     private var annotationEditorWC: AnnotationEditorWindowController?
+    private var sidebarFilter = SidebarFilter()
 
     convenience init(database: ScreenLensDatabase?) {
         let window = NSWindow(
@@ -46,13 +48,22 @@ class GalleryWindowController: NSWindowController {
         filterBar.onFiltersChanged = { [weak self] _ in self?.performSearch() }
         contentView.addSubview(filterBar)
 
-        // Split view: grid (left) + detail (right)
+        // Split view: browse sidebar | grid | detail
         splitView = NSSplitView()
         splitView.isVertical = true
         splitView.dividerStyle = .thin
         splitView.translatesAutoresizingMaskIntoConstraints = false
 
-        // Left: collection view
+        // Left: browse sidebar
+        browseSidebar = BrowseSidebarView()
+        browseSidebar.onSelectionChanged = { [weak self] filter in
+            self?.sidebarFilter = filter
+            self?.performSearch()
+        }
+
+        // No extra container — BrowseSidebarView has its own scroll view
+
+        // Center: collection view
         let layout = NSCollectionViewFlowLayout()
         layout.itemSize = NSSize(width: 240, height: 240)
         layout.minimumInteritemSpacing = 12
@@ -102,10 +113,13 @@ class GalleryWindowController: NSWindowController {
             detailView.bottomAnchor.constraint(equalTo: detailContainer.bottomAnchor),
         ])
 
+        splitView.addArrangedSubview(browseSidebar)
         splitView.addArrangedSubview(scrollView)
         splitView.addArrangedSubview(detailContainer)
-        splitView.setHoldingPriority(.defaultLow, forSubviewAt: 0)
-        splitView.setHoldingPriority(.defaultHigh, forSubviewAt: 1)
+        splitView.setHoldingPriority(.defaultHigh, forSubviewAt: 0)   // sidebar: fixed
+        splitView.setHoldingPriority(.defaultLow, forSubviewAt: 1)    // grid: flexible
+        splitView.setHoldingPriority(.defaultHigh, forSubviewAt: 2)   // detail: fixed
+        splitView.delegate = self
         contentView.addSubview(splitView)
 
         // Layout
@@ -125,6 +139,11 @@ class GalleryWindowController: NSWindowController {
 
             detailContainer.widthAnchor.constraint(equalToConstant: 280),
         ])
+
+        // Set initial divider positions after layout
+        DispatchQueue.main.async { [weak self] in
+            self?.splitView.setPosition(220, ofDividerAt: 0)
+        }
     }
 
     // MARK: - Data
@@ -132,13 +151,24 @@ class GalleryWindowController: NSWindowController {
     private var screenshots: [Screenshot] = []
 
     private func loadRecent() {
-        do {
-            screenshots = try database?.listRecent() ?? []
-        } catch {
-            NSLog("Failed to load recent screenshots: \(error)")
-            screenshots = []
+        if !sidebarFilter.isEmpty {
+            // Sidebar has an active filter — use searchFiltered even with empty text
+            do {
+                screenshots = try database?.searchFiltered(text: "", filters: GalleryFilters(), sidebarFilter: sidebarFilter) ?? []
+            } catch {
+                NSLog("Failed to load filtered screenshots: \(error)")
+                screenshots = []
+            }
+        } else {
+            do {
+                screenshots = try database?.listRecent() ?? []
+            } catch {
+                NSLog("Failed to load recent screenshots: \(error)")
+                screenshots = []
+            }
         }
         reloadGrid()
+        refreshSidebar()
     }
 
     @objc private func searchChanged() {
@@ -149,13 +179,13 @@ class GalleryWindowController: NSWindowController {
         let query = searchField.stringValue
         let filters = filterBar.currentFilters
 
-        if query.isEmpty && filters.isEmpty {
+        if query.isEmpty && filters.isEmpty && sidebarFilter.isEmpty {
             loadRecent()
             return
         }
 
         do {
-            screenshots = try database?.searchFiltered(text: query, filters: filters) ?? []
+            screenshots = try database?.searchFiltered(text: query, filters: filters, sidebarFilter: sidebarFilter) ?? []
         } catch {
             NSLog("Search failed: \(error)")
             screenshots = []
@@ -166,6 +196,16 @@ class GalleryWindowController: NSWindowController {
     private func reloadGrid() {
         collectionView.reloadData()
         emptyLabel.isHidden = !screenshots.isEmpty
+    }
+
+    private func refreshSidebar() {
+        do {
+            let dateGroups = try database?.fetchDateGroups() ?? []
+            let appGroups = try database?.fetchAppGroups() ?? []
+            browseSidebar.reload(dateGroups: dateGroups, appGroups: appGroups)
+        } catch {
+            NSLog("Failed to refresh sidebar: \(error)")
+        }
     }
 
     // MARK: - Annotation Editor
@@ -179,6 +219,20 @@ class GalleryWindowController: NSWindowController {
             screenshot: screenshot, image: image, database: db
         )
         annotationEditorWC?.showWindow(nil)
+    }
+}
+
+// MARK: - NSSplitViewDelegate
+
+extension GalleryWindowController: NSSplitViewDelegate {
+    func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMinimumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        if dividerIndex == 0 { return 160 }  // sidebar min width
+        return proposedMinimumPosition
+    }
+
+    func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMaximumPosition: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+        if dividerIndex == 0 { return 300 }  // sidebar max width
+        return proposedMaximumPosition
     }
 }
 
